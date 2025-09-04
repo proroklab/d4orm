@@ -203,7 +203,7 @@ def run_diffusion(args: Args):
     alphas_bar = jnp.array(interp_func(jnp.linspace(0, 1, args.Ndiffuse + 1)))
     alphas = jnp.concatenate([alphas_bar[:1], alphas_bar[1:] / alphas_bar[:-1]])
 
-    sigmas = 1 / alphas_bar - 1
+    sigmas = jnp.sqrt(1 / alphas_bar - 1)
     Sigmas_cond = (
         (1 - alphas) * (1 - jnp.sqrt(jnp.roll(alphas_bar, 1))) / (1 - alphas_bar)
     )
