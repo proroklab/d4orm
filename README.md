@@ -1,22 +1,19 @@
 <div align="center">
   <h1>D4orm: Multi-Robot Trajectories with <br>Dynamics-aware Diffusion Denoised Deformations</h2>
-  <strong>IROS 2025</strong>
-  <br>
-    <a href="https://github.com/yuhaozhang7" target="_blank">Yuhao Zhang</a><sup>1</sup>,
+  <b>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) 2025</b>
+  <p>
+    <a href="https://yuhaozhang7.github.io" target="_blank">Yuhao Zhang</a><sup>1</sup>,
     <a href="https://kei18.github.io/" target="_blank">Keisuke Okumura</a><sup>1,2</sup>,
     <a href="https://proroklab.org/team/" target="_blank">Heedo Woo</a><sup>1</sup>,
     <a href="https://www.cl.cam.ac.uk/~as3233/" target="_blank">Ajay Shankar</a><sup>1</sup>,
-    <a href="https://www.cst.cam.ac.uk/people/asp45" target="_blank">Amanda Prorok</a><sup>1</sup>
-  <p>
-    <h45>
-      <sup>1</sup>Prorok Lab, University of Cambridge &nbsp;&nbsp;
-      <sup>2</sup>AIST Japan &nbsp;&nbsp;
-    </h5>
+    <a href="https://www.cst.cam.ac.uk/people/asp45" target="_blank">Amanda Prorok</a><sup>1</sup><br>
+    <sup>1</sup>Prorok Lab, University of Cambridge &nbsp;&nbsp;
+    <sup>2</sup>AIST Japan
   </p>
 
-  [<img src="https://badges.aleen42.com/src/youtube.svg" alt="YouTube">](https://www.youtube.com/watch?v=WuFuecpZQSY)
-  [<img src="https://img.shields.io/badge/arXiv-2503.12204-990000" alt="Arxiv">](https://arxiv.org/abs/2503.12204)
-
+  [<img src="https://img.shields.io/badge/arXiv--b31b1b?style=social&logo=arxiv" alt="Arxiv">](https://arxiv.org/abs/2503.12204)
+  [<img src="https://img.shields.io/badge/IEEE%20Xplore--00629B?style=social&logo=ieee" alt="IEEE Xplore">](https://ieeexplore.ieee.org/document/11246029)
+  [<img src="https://img.shields.io/badge/YouTube--red?style=social&logo=youtube" alt="YouTube">](https://www.youtube.com/watch?v=WuFuecpZQSY)
 </div>
 
 <p align="center">
@@ -87,10 +84,13 @@ python d4orm/planners/path_integral.py
 ## Citation
 If you find this work to be useful in your research, please consider citing:
 ```bibtex
-@article{zhang2025d4orm,
+@inproceedings{zhang2025d4orm,
   title={D4orm: Multi-Robot Trajectories with Dynamics-aware Diffusion Denoised Deformations},
   author={Zhang, Yuhao and Okumura, Keisuke and Woo, Heedo and Shankar, Ajay and Prorok, Amanda},
-  journal={arXiv preprint arXiv:2503.12204},
-  year={2025}
+  booktitle={IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+  pages={14118--14123},
+  year={2025},
+  doi={10.1109/IROS60139.2025.11246029},
+  publisher={IEEE}
 }
 ```
