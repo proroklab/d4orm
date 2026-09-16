@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 80
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "D"]
+ignore = ["D105", "D107"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D"]
+
+[tool.pylint.main]
+# JAX and Flax create attributes dynamically.
+ignored-modules = ["jax", "jax.numpy", "flax.struct"]
+
+[tool.pylint.format]
+max-line-length = 80
+
+[tool.pylint.messages_control]
+# Array-oriented APIs naturally carry several dimensions and rollout settings.
+disable = ["too-few-public-methods", "too-many-instance-attributes",
+           "too-many-arguments", "too-many-positional-arguments",
+           "too-many-locals", "too-many-statements", "duplicate-code"]

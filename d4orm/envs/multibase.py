@@ -1,300 +1,339 @@
-import os
-import json
+"""Shared multi-robot dynamics, collision costs, rollouts, and rendering."""
+
+import functools
+
 import jax
-from jax import numpy as jnp
+import jax.numpy as jnp
 from flax import struct
-from functools import partial
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-from matplotlib.animation import FuncAnimation, PillowWriter
-from matplotlib.patches import Circle
 
 
 @struct.dataclass
 class State:
-    pipeline_state: jnp.ndarray
-    reward: jnp.ndarray
-    mask: jnp.ndarray
-    collision: jnp.ndarray
+    """Joint state, per-agent rewards, goal masks, and collision flags."""
+
+    pipeline_state: jax.Array
+    reward: jax.Array
+    mask: jax.Array
+    collision: jax.Array
 
 
-class MultiBase():
+class MultiBase:
+    """Shared simulation for subclasses defining geometry and robot dynamics."""
 
-    def __init__(self, num_agents):
+    # Subclasses define geometry before using the shared dynamics.
+    action_dim_agent: int
+    obsv_dim_agent: int
+    pos_dim_agent: int
+    x0: jax.Array
+    xg: jax.Array
+    agent_radius: float
+    safe_margin: float
+    stop_distance: float
+    stop_velocity: float
+    lim: float
+
+    def __init__(self, num_agents: int):
+        if not isinstance(num_agents, int) or num_agents < 1:
+            raise ValueError("num_agents must be a positive integer.")
         self.num_agents = num_agents
-        self.obsv_dim_agent = 1000
-        self.pos_dim_agent = 1000
-        self.diameter = 1000
-        self.safe_margin = 1000
-        self.agent_radius = 1000
-        self.stop_distance = self.agent_radius / 2
-        self.stop_velocity = 1000
         self.offset = 1
+        self.num_obstacles = 0
+        self.obstacle_centers = jnp.zeros((0, 2))
+        self.obstacle_radii = jnp.zeros((0,))
 
-        initial_states, goal_states = self.generate_positions(self.diameter, num_agents)
-        self.lim = self.diameter / 2 + 1
-
-        self.x0 = initial_states.flatten()
-        self.xg = goal_states.flatten()
-        self.max_distance = self.diameter
-
-    def generate_positions(self, diameter, num_agents):
-        radius = diameter / 2.0
+    def generate_positions(self, diameter: float, num_agents: int):
+        """Creates antipodal starts and goals on a circle."""
         angles = jnp.linspace(0, 2 * jnp.pi, num_agents, endpoint=False)
-
-        position_components = [
-            radius * jnp.cos(angles),  # x
-            radius * jnp.sin(angles),  # y
+        positions = [
+            diameter / 2 * jnp.cos(angles),
+            diameter / 2 * jnp.sin(angles),
         ]
-        zero_components = [jnp.zeros_like(angles) for _ in range(self.obsv_dim_agent-self.pos_dim_agent)]
+        padding = [
+            jnp.zeros_like(angles)
+            for _ in range(self.obsv_dim_agent - self.pos_dim_agent)
+        ]
+        initial_states = jnp.stack(positions + padding, axis=-1)
+        return initial_states, -initial_states
 
-        initial_states = jnp.stack(position_components + zero_components, axis=-1)
+    def reset(self, rng: jax.Array) -> State:
+        """Returns the deterministic initial state."""
+        return self.reset_conditioned(self.x0, rng)
 
-        goal_states = -initial_states
-
-        return initial_states, goal_states
-    
-    def reset(self, rng: jax.Array):
+    def reset_conditioned(self, x0: jax.Array, rng: jax.Array) -> State:
+        """Returns a state with supplied joint coordinates and cleared flags."""
+        del rng  # These environments have deterministic resets.
         return State(
-            pipeline_state=self.x0,
+            pipeline_state=jnp.asarray(x0, dtype=jnp.float32),
             reward=jnp.zeros(self.num_agents, dtype=jnp.float32),
             mask=jnp.zeros(self.num_agents, dtype=jnp.float32),
-            collision=jnp.zeros(self.num_agents, dtype=jnp.float32))
-    
-    def reset_conditioned(self, x0: jax.Array, rng: jax.Array):
-        return State(
-            pipeline_state=x0,
-            reward=jnp.zeros(self.num_agents, dtype=jnp.float32),
-            mask=jnp.zeros(self.num_agents, dtype=jnp.float32),
-            collision=jnp.zeros(self.num_agents, dtype=jnp.float32))
+            collision=jnp.zeros(self.num_agents, dtype=jnp.float32),
+        )
 
-    @partial(jax.jit, static_argnums=(0,))
-    def clip_actions(self, traj, factor=1):
+    def direct_path_actions(
+        self, initial_state: State, goals: jax.Array, horizon: int
+    ) -> jax.Array:
+        """Builds a constant-control seed for a direct path.
+
+        Args:
+            initial_state: State from which planning starts.
+            goals: Flattened joint goal state.
+            horizon: Number of control timesteps.
+
+        Returns:
+            Controls shaped (horizon, action_size). Collision avoidance and
+            goal stopping are handled by the normal rollout and optimizer.
+        """
         raise NotImplementedError
-    
-    @partial(jax.jit, static_argnums=(0,))
-    def agent_dynamics(self, x, u):
+
+    def clip_actions(self, traj: jax.Array, factor: float = 1):
+        """Clips joint actions to the environment's actuation limits."""
         raise NotImplementedError
-    
-    def clip_velocity(self, x):
-        """x is state for single robot"""
+
+    def agent_dynamics(self, x: jax.Array, u: jax.Array):
+        """Returns the time derivative of a single robot state."""
         raise NotImplementedError
-    
-    def get_current_velocity(self, q):
-        """q is joint state for all robots"""
+
+    def clip_velocity(self, x: jax.Array):
+        """Clips the velocity components of a single robot state."""
         raise NotImplementedError
-    
-    @partial(jax.jit, static_argnums=(0,))
-    def rk4(self, x, u, dt):
-        # k1 = self.agent_dynamics(x, u)
-        # return x + dt * k1
-        k1 = self.agent_dynamics(x, u)
-        k2 = self.agent_dynamics(x + dt / 2 * k1, u)
-        k3 = self.agent_dynamics(x + dt / 2 * k2, u)
-        k4 = self.agent_dynamics(x + dt * k3, u)
-        x_next = x + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
-        return self.clip_velocity(x_next)
-    
-    @partial(jax.jit, static_argnums=(0,))
-    def rollout(self,
-                state: State,
-                xg: jax.Array,
-                us: jax.Array,
-                penalty_weight: float=1.0,
-                use_mask: bool=True,
-                margin_factor: int=1,
-                dt: float=0.1):
+    def get_current_velocity(self, q: jax.Array):
+        """Returns each robot's scalar speed from a matrix of robot states."""
+        raise NotImplementedError
 
-        init_pos = state.pipeline_state.reshape(self.num_agents, -1)
-        goal_pos = xg.reshape(self.num_agents, -1)
-        max_distances = jnp.linalg.norm(init_pos - goal_pos, axis=1)
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def rk4(self, x: jax.Array, u: jax.Array, dt: float):
+        """Integrates one control timestep with fourth-order Runge-Kutta."""
+        first_slope = self.agent_dynamics(x, u)
+        second_slope = self.agent_dynamics(x + dt / 2 * first_slope, u)
+        third_slope = self.agent_dynamics(x + dt / 2 * second_slope, u)
+        fourth_slope = self.agent_dynamics(x + dt * third_slope, u)
+        next_state = x + dt / 6 * (
+            first_slope + 2 * second_slope + 2 * third_slope + fourth_slope
+        )
+        return self.clip_velocity(next_state)
 
-        def step_wrapper(state: State, u: jax.Array):
-            state = self.step(state, xg, u, max_distances, penalty_weight, use_mask, margin_factor, dt)
-            return state, (state.reward, state.pipeline_state, state.mask, state.collision)
+    def integrate_states(self, states, actions, dt):
+        """Integrates the robot batch; subclasses may dispatch by robot type."""
+        return jax.vmap(self.rk4, in_axes=(0, 0, None))(states, actions, dt)
 
-        _, (rews, pipline_states, masks, collisions) = jax.lax.scan(step_wrapper, state, us)
+    def rollout(
+        self,
+        state: State,
+        xg: jax.Array,
+        us: jax.Array,
+        penalty_weight: float = 1.0,
+        dt: float = 0.1,
+    ):
+        """Returns rewards, states, goal masks, and collisions for controls.
 
-        rews = rews.mean(axis=0)
-        
-        return rews, pipline_states, masks, collisions
+        Args:
+            state: Initial environment state.
+            xg: Flattened joint goal state.
+            us: Controls of shape (horizon, joint_action_dim).
+            penalty_weight: Cost per colliding neighbor.
+            dt: Integration timestep in seconds.
 
-    @partial(jax.jit, static_argnums=(0,))
-    def step(self,
-             state: State,
-             xg: jax.Array,
-             action: jax.Array,
-             max_distances: jax.Array,
-             penalty_weight: float=1.0,
-             use_mask: bool=True,
-             margin_factor: int=1,
-             dt: float=0.1) -> State:
-        """Step Once"""
-        q = state.pipeline_state.reshape(self.num_agents, -1)
-        actions = action.reshape(self.num_agents, -1)
+        Returns:
+            Mean reward per robot and post-step state, goal, and collision
+            histories. The initial state is not included in these histories.
+        """
+        return self._rollout(state, xg, us, penalty_weight, dt, True)
+
+    def score_actions(
+        self,
+        state: State,
+        xg: jax.Array,
+        us: jax.Array,
+        penalty_weight: float = 1.0,
+        dt: float = 0.1,
+        include_robot_collisions: bool = True,
+    ) -> jax.Array:
+        """Returns rollout rewards without allocating trajectory histories.
+
+        Setting include_robot_collisions=False ignores robot-pair costs for
+        initialization. Obstacle costs and goal progress remain unchanged.
+        """
+        return self._rollout(
+            state, xg, us, penalty_weight, dt, False, include_robot_collisions
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0, 6, 7))
+    def _rollout(
+        self,
+        state,
+        goals,
+        actions,
+        penalty_weight,
+        dt,
+        record_history,
+        include_robot_collisions=True,
+    ):
+        initial_positions = state.pipeline_state.reshape(self.num_agents, -1)
+        goal_positions = goals.reshape(self.num_agents, -1)
+        initial_distances = jnp.linalg.norm(
+            initial_positions[:, : self.pos_dim_agent]
+            - goal_positions[:, : self.pos_dim_agent],
+            axis=-1,
+        )
+
+        def advance(carry, action):
+            current_state, reward_sum = carry
+            next_state = self.step(
+                current_state,
+                goals,
+                action,
+                initial_distances,
+                penalty_weight,
+                dt,
+                include_robot_collisions,
+            )
+            history = (
+                (
+                    next_state.pipeline_state,
+                    next_state.mask,
+                    next_state.collision,
+                )
+                if record_history
+                else None
+            )
+            return (next_state, reward_sum + next_state.reward), history
+
+        (_, reward_sum), history = jax.lax.scan(
+            advance, (state, jnp.zeros_like(state.reward)), actions
+        )
+        rewards = reward_sum / actions.shape[0]
+        if record_history:
+            return (rewards, *history)
+        return rewards
+
+    @functools.partial(jax.jit, static_argnums=(0, 7))
+    def step(
+        self,
+        state: State,
+        xg: jax.Array,
+        action: jax.Array,
+        max_distances: jax.Array,
+        penalty_weight: float = 1.0,
+        dt: float = 0.1,
+        include_robot_collisions: bool = True,
+    ) -> State:
+        """Advances robots and evaluates goal stopping and collision costs."""
+        robot_states = state.pipeline_state.reshape(self.num_agents, -1)
+        robot_actions = action.reshape(self.num_agents, -1)
         goals = xg.reshape(self.num_agents, -1)
-
-        # Get new q
-        q_new = jax.vmap(lambda agent_state, agent_action: 
-                         self.rk4(agent_state, agent_action, dt))(q, actions)
-        
-        # Don't update for stopped state
-        previously_stopped_mask = jnp.broadcast_to(state.mask, (self.num_agents,)).astype(bool)
-        q_new = jnp.where(use_mask,
-                          jnp.where(previously_stopped_mask[:, None], q, q_new),
-                          q_new)
-
-        dist_to_goals = jax.vmap(
-            lambda agent_position, goal_position: jnp.linalg.norm(agent_position[:self.pos_dim_agent] - goal_position[:self.pos_dim_agent])
-        )(q_new, goals)
-
-        curr_vel = self.get_current_velocity(q)
-        stop_update_mask = (dist_to_goals < self.stop_distance) & (curr_vel <= self.stop_velocity)
-        previously_stopped_mask = jnp.broadcast_to(state.mask, (self.num_agents,)).astype(bool)
-        combined_stop_mask = stop_update_mask | previously_stopped_mask
-
-        agent_wise_reward, collision = self.get_reward(q=q_new,
-                                                       distances_to_goals=dist_to_goals,
-                                                       max_distances=max_distances,
-                                                       penalty_weight=penalty_weight,
-                                                       margin_factor=margin_factor)
-
-        mask = combined_stop_mask.astype(float)
-        collision = collision.astype(float)
-
-        return state.replace(pipeline_state=q_new.flatten(), reward=agent_wise_reward, mask=mask, collision=collision)
-
-    @partial(jax.jit, static_argnums=(0,))
-    def get_reward(self,
-                   q: jax.Array,
-                   distances_to_goals: jax.Array,
-                   max_distances: jax.Array,
-                   penalty_weight: float=1.0,
-                   margin_factor: int=1) -> float:
-        agent_positions = q[:, :self.pos_dim_agent]
-
-        # Calculate rewards using distance
-        rewards = 1.0 - distances_to_goals / max_distances
-
-        # Compute pairwise penalties
-        pairwise_differences = agent_positions[:, None, :] - agent_positions[None, :, :]
-        pairwise_distances = jnp.linalg.norm(pairwise_differences, axis=-1)
-        mask = ~jnp.eye(self.num_agents, dtype=bool)  # Mask for non-diagonal elements
-        valid_distances = jnp.where(mask, pairwise_distances, jnp.inf)
-        agent_collision_threshold = 2 * self.agent_radius + self.safe_margin * margin_factor
-
-        penalties_agent = jnp.where(
-            valid_distances <= agent_collision_threshold,
-            1.0,
-            0.0
+        next_states = self.integrate_states(robot_states, robot_actions, dt)
+        stopped = state.mask.astype(bool)
+        next_states = jnp.where(stopped[:, None], robot_states, next_states)
+        goal_distances = jnp.linalg.norm(
+            next_states[:, : self.pos_dim_agent]
+            - goals[:, : self.pos_dim_agent],
+            axis=-1,
+        )
+        reached_goals = (goal_distances < self.stop_distance) & (
+            self.get_current_velocity(next_states) <= self.stop_velocity
+        )
+        # Once reached, goals remain marked and robots stay stopped.
+        goal_mask = reached_goals | stopped
+        rewards, collisions = self.get_reward(
+            next_states,
+            goal_distances,
+            max_distances,
+            penalty_weight,
+            include_robot_collisions,
+        )
+        return state.replace(
+            pipeline_state=next_states.flatten(),
+            reward=rewards,
+            mask=goal_mask.astype(state.mask.dtype),
+            collision=collisions.astype(state.collision.dtype),
         )
 
-        collision = jnp.any(penalties_agent != 0.0, axis=1)
+    @functools.partial(jax.jit, static_argnums=(0, 5))
+    def get_reward(
+        self,
+        q: jax.Array,
+        distances_to_goals: jax.Array,
+        max_distances: jax.Array,
+        penalty_weight: float = 1.0,
+        include_robot_collisions: bool = True,
+    ):
+        """Returns normalized progress minus collision penalties."""
+        rewards = 1.0 - distances_to_goals / jnp.maximum(max_distances, 1e-6)
+        colliding_pairs = self.collision_matrix(q)
+        obstacle_collisions = self.obstacle_collision_matrix(q)
+        if include_robot_collisions:
+            penalties = colliding_pairs.sum(axis=1) + obstacle_collisions.sum(axis=1)
+        else:
+            penalties = obstacle_collisions.sum(axis=1)
+        return (
+            rewards - penalties * penalty_weight,
+            jnp.any(colliding_pairs, axis=1)
+            | jnp.any(obstacle_collisions, axis=1),
+        )
 
-        # Compute agent-wise reward
-        total_agent_penalty = penalties_agent.sum(axis=1) * penalty_weight
-        rewards = rewards - total_agent_penalty
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def collision_matrix(self, robot_states: jax.Array) -> jax.Array:
+        """Returns pairwise collision flags with optional leading batch axes.
 
-        # Calculate total reward
-        return rewards, collision
+        Args:
+            robot_states: States shaped (..., num_agents, state_dim).
+
+        Returns:
+            Boolean array shaped (..., num_agents, num_agents), with a false
+            diagonal. Exact overlap and safety-boundary contact are collisions.
+        """
+        positions = robot_states[..., : self.pos_dim_agent]
+        differences = positions[..., :, None, :] - positions[..., None, :, :]
+        squared_distances = jnp.sum(differences**2, axis=-1)
+        threshold = 2 * self.agent_radius + self.safe_margin
+        return (squared_distances <= threshold**2) & ~jnp.eye(
+            self.num_agents, dtype=bool
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def obstacle_collision_matrix(self, robot_states: jax.Array) -> jax.Array:
+        """Returns (..., num_agents, num_obstacles) collision flags.
+
+        Static obstacles contribute to failure and cost without connecting
+        unrelated robots in the robot-to-robot collision graph.
+        """
+        if self.num_obstacles == 0:
+            return jnp.zeros(robot_states.shape[:-1] + (0,), dtype=bool)
+        positions = robot_states[..., : self.pos_dim_agent]
+        differences = positions[..., :, None, :] - self.obstacle_centers
+        thresholds = self.agent_radius + self.obstacle_radii + self.safe_margin
+        return jnp.sum(differences**2, axis=-1) <= thresholds**2
 
     @property
-    def action_size(self):
-        raise NotImplementedError
+    def action_size(self) -> int:
+        """Number of components in the joint action vector."""
+        return self.action_dim_agent * self.num_agents
 
     @property
-    def observation_size(self):
+    def observation_size(self) -> int:
+        """Number of components in the joint state vector."""
         return self.obsv_dim_agent * self.num_agents
-    
+
     def get_heading_line(self, state, position, agent_idx):
+        """Returns empty heading coordinates for rotation-invariant robots."""
+        del state, position, agent_idx  # Holonomic robots have no heading.
         return [], []
-    
-    def get_color(self, i, colormaps):
-        return cm.get_cmap(colormaps[i % len(colormaps)])
 
-    def render_gif(self, xs: jnp.ndarray, gif_output_path, trajectory_image_path, ids=None):
-        # Reshape trajectory for rendering
-        xs = xs.reshape(-1, self.num_agents, self.obsv_dim_agent)
-        
-        # --- Initialize GIF Rendering ---
-        fig, ax = plt.subplots(constrained_layout=True)
-        ax.set(xlim=(-self.lim, self.lim), ylim=(-self.lim, self.lim), aspect="equal")
+    def render_gif(self, xs, gif_output_path, trajectory_image_path, ids=None):
+        """Saves an animation and static plot; imports rendering on demand."""
+        # Keep simulation independent of Matplotlib.
+        # pylint: disable-next=import-outside-toplevel
+        from d4orm.envs import rendering
 
-        colormaps = ["Reds", "Greens", "Purples", "Oranges", "Blues"]
-        circles, headings = [], []
-
-        for i in range(self.num_agents):
-            cmap = self.get_color(i, colormaps)
-            color = cmap(0.6)
-
-            circle = Circle((0, 0), radius=self.agent_radius, facecolor=color)
-            ax.add_patch(circle)
-            circles.append(circle)
-
-            heading, = ax.plot([], [], color="black", lw=1.5)
-            headings.append(heading)
-
-        def update(frame):
-            for i, (circle, heading) in enumerate(zip(circles, headings)):
-                state = xs[frame * self.offset, i]
-                position = state[:self.pos_dim_agent]
-                circle.set_center(position)
-                x_line, y_line = self.get_heading_line(state, position, i)
-                heading.set_data(x_line, y_line)
-            return circles + headings
-
-        anim = FuncAnimation(
-            fig,
-            update,
-            frames=xs.shape[0] // self.offset + 1,
-            blit=True,
-            interval=100,
+        rendering.render_trajectory(
+            self, xs, gif_output_path, trajectory_image_path, ids
         )
 
-        if gif_output_path != "None":
-            anim.save(gif_output_path, writer=PillowWriter(fps=10 // self.offset))
-        plt.close(fig)
+    def render_gif_interactive(self, xs):
+        """Opens a trajectory plot in an interactive Matplotlib window."""
+        # Keep simulation independent of Matplotlib.
+        # pylint: disable-next=import-outside-toplevel
+        from d4orm.envs import rendering
 
-        # --- Generate Static Trajectory Image ---
-        xs = xs[::self.offset]
-        fig_traj, ax_traj = plt.subplots()
-        ax_traj.set(xlim=(-self.lim, self.lim), ylim=(-self.lim, self.lim), aspect="equal")
-        ax_traj.scatter([], [], color='k', alpha=0.5, label='Obstacle', s=200)
-
-        num_colormaps = len(colormaps)
-        for i in range(self.num_agents):
-            cmap_index = i % num_colormaps if ids is None else int(ids[i]) + 1
-            cmap = cm.get_cmap(colormaps[cmap_index])
-            color = cmap(0.6)
-
-            traj_x, traj_y = xs[:, i, 0], xs[:, i, 1]
-            ax_traj.plot(traj_x, traj_y, color=color, linestyle='--', linewidth=1, alpha=0.5)
-
-            start_circle = Circle((traj_x[0], traj_y[0]), self.agent_radius, color=color, zorder=5)
-            ax_traj.add_artist(start_circle)
-
-        # --- Collision Detection ---
-        collision_positions = []
-        for t in range(xs.shape[0]):
-            positions = xs[t, :, :self.pos_dim_agent]
-            diffs = positions[:, None, :] - positions[None, :, :]
-            dists = jnp.linalg.norm(diffs, axis=-1)
-            collision_matrix = (dists < self.agent_radius * 2 + self.safe_margin) & (dists > 0)
-            for i in range(self.num_agents):
-                if jnp.any(collision_matrix[i]):
-                    collision_positions.append(positions[i])
-
-        for pos in collision_positions:
-            ax_traj.plot(pos[0], pos[1], 'rx', markersize=10, markeredgewidth=1)
-
-        # --- Plot Goal Positions ---
-        xg_reshaped = self.xg.reshape(self.num_agents, -1)
-        goal_x, goal_y = xg_reshaped[:, 0], xg_reshaped[:, 1]
-        ax_traj.plot(goal_x, goal_y, '+', color='k', alpha=0.5, markersize=10, markeredgewidth=1, zorder=10)
-
-        fig_traj.savefig(trajectory_image_path, bbox_inches='tight', pad_inches=0.05)
-        plt.close(fig_traj)
-
-    def save_traj(self, Y, filename):
-        raise NotImplementedError
+        rendering.show_trajectory(self, xs)
