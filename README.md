@@ -10,8 +10,8 @@
     <sup>2</sup>AIST Japan
   </p>
 
-  [<img src="https://img.shields.io/badge/arXiv--b31b1b?style=social&logo=arxiv" alt="Arxiv">]()
-  [<img src="https://img.shields.io/badge/YouTube--red?style=social&logo=youtube" alt="YouTube">](https://www.youtube.com/watch?v=WuFuecpZQSY)
+  [<img src="https://img.shields.io/badge/arXiv--b31b1b?style=social&logo=arxiv" alt="Arxiv">](https://arxiv.org/abs/2609.35651)
+  [<img src="https://img.shields.io/badge/YouTube--red?style=social&logo=youtube" alt="YouTube">]()
 </div>
 
 <p align="center">
@@ -110,6 +110,7 @@ If you find this work to be useful in your research, please consider citing:
 @article{zhang2026denoising,
   title={Denoising Multi-Robot Trajectories},
   author={Zhang, Yuhao and Okumura, Keisuke and Shankar, Ajay and Prorok, Amanda},
+  journal={arXiv preprint arXiv:2609.35651},
   year={2026}
 }
 ```
