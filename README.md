@@ -21,7 +21,7 @@
 
 This repository includes code for **D4orm** and its variants. Built on [model-based diffusion](https://github.com/LeCAR-Lab/model-based-diffusion), D4orm refines control trajectories through parallel sampling and diffusion denoising to generate kinodynamically feasible, collision-free multi-robot motion. Its decoupled, online receding-horizon, and distributed variants extend this framework to large robot teams, feedback control, and settings with limited computing resources.
 
-> **Release notice:** The current release includes an implementation of **D4orm-D**, the decoupled planner. Implementations of other **D4orm** variants will be released progressively.
+> **Release notice:** The current release includes **D4orm**, **D4orm-D** (decoupled), and **D-D4orm** (distributed). Implementations of other variants will be released progressively.
 
 
 ## Environment setup
@@ -51,7 +51,7 @@ Run a planner and save its trajectory as a GIF and PNG:
 d4orm --method d4orm-d --env-name multi2dholo --num-agents 16 --save-images
 ```
 
-Available methods are `d4orm`, `d4orm-d`, `mppi`, and `cem`.
+Available methods are `d4orm`, `d4orm-d`, `d-d4orm`, `mppi`, and `cem`.
 The module entry point accepts the same options:
 
 ```bash

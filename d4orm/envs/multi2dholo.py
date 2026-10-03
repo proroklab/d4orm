@@ -7,7 +7,12 @@ from d4orm.envs import holonomic
 
 
 def obstacle_positions(num_obstacles: int, seed: int = 0) -> jax.Array:
-    """Creates the reference layouts inside a unit-radius disk."""
+    """Creates obstacle centers on or inside the unit circle.
+
+    A single obstacle is centered at the origin. Two to four obstacles are
+    equally spaced on the circle; larger layouts are sampled within the disk
+    using the supplied seed.
+    """
     if num_obstacles == 0:
         return jnp.zeros((0, 2))
     if num_obstacles == 1:

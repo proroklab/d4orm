@@ -1,6 +1,8 @@
 """D4ORM-D: decoupled denoising with collision-connected reward groups."""
 
+import dataclasses
 import functools
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -12,7 +14,6 @@ from d4orm.planners import core, diffusion
 @jax.jit
 def connected_groups(adjacency: jax.Array) -> jax.Array:
     """Returns component membership, including singleton diagonal entries."""
-
     # Include each agent in its own group, then propagate connectivity.
     reachable = adjacency.astype(bool) | jnp.eye(adjacency.shape[0], dtype=bool)
 
@@ -39,7 +40,6 @@ def augment_collision_graph(
         Symmetric augmented adjacency. Reconnection uses only current raw
         collisions, so restored edges cannot trigger further reconnections.
     """
-
     # Find agents colliding outside their previous group.
     same_previous_group = previous_groups.astype(bool)
     outside_collision = jnp.any(
@@ -71,12 +71,31 @@ def failure_identifiers(
     )
 
 
+class FailureHistory(NamedTuple):
+    """Previous group identifiers and consecutive failures for each robot."""
+
+    identifiers: jax.Array
+    counts: jax.Array
+
+
+@dataclasses.dataclass(frozen=True)
+class DecoupledState:
+    """Per-call grouping and adaptation state, managed outside JIT."""
+
+    group_membership: jax.Array
+    active_agents: jax.Array
+    previous_collisions: jax.Array
+    failure_history: FailureHistory
+    independent_probe: bool
+    direct_path_probe: bool
+
+
 class D4ORMDPlanner(diffusion.D4ORMPlanner):
     """Replans failed agents with sample weights shared within collision groups.
 
     Robots colliding outside their previous group reconnect to their previous
     direct neighbors that are currently collision-free. Components of this
-    augmented graph share weights. Successful agents' actions stay fixed while
+    augmented graph share weights. Successful agents' controls stay fixed while
     their trajectories still participate in collision costs.
     """
 
@@ -89,71 +108,104 @@ class D4ORMDPlanner(diffusion.D4ORMPlanner):
 
         self._compiled_probe = jax.jit(
             functools.partial(
-                self._optimize_cycle, include_robot_collisions=False
+                self._optimize_iteration, include_robot_collisions=False
             )
         )
         self._compiled_groups = jax.jit(self._find_groups)
 
-    def _uses_independent_probe(self, initial_actions):
-        return initial_actions is None and not self.config.direct_path_init
+    def _initial_optimizer_state(self, controls, *, warm_start):
+        del controls
+        num_agents = self.rollout.num_agents
+        return DecoupledState(
+            group_membership=jnp.eye(num_agents),
+            active_agents=jnp.ones(num_agents, dtype=bool),
+            previous_collisions=jnp.zeros((num_agents, num_agents), dtype=bool),
+            failure_history=self._initial_adaptation_state(),
+            independent_probe=not warm_start
+            and not self.config.direct_path_init,
+            direct_path_probe=not warm_start and self.config.direct_path_init,
+        )
+
+    def _observe_iteration(self, iteration, evaluation, optimizer_state):
+        if optimizer_state.independent_probe and iteration == 0:
+            return optimizer_state
+        groups, active, collisions = self._update_groups(
+            evaluation.states,
+            evaluation.goal_masks,
+            evaluation.collisions,
+            optimizer_state.group_membership,
+            optimizer_state.previous_collisions,
+        )
+        return dataclasses.replace(
+            optimizer_state,
+            group_membership=groups,
+            active_agents=active,
+            previous_collisions=collisions,
+        )
+
+    def _prepare_iteration(
+        self,
+        iteration,
+        controls,
+        penalty_weights,
+        evaluation,
+        optimizer_state,
+    ):
+        controls, penalty_weights, history = self._adapt_controls(
+            iteration,
+            controls,
+            evaluation.collisions,
+            optimizer_state.group_membership,
+            optimizer_state.active_agents,
+            penalty_weights,
+            optimizer_state.failure_history,
+            initialization_probe=(
+                (optimizer_state.direct_path_probe and iteration == 0)
+                or (optimizer_state.independent_probe and iteration == 1)
+            ),
+        )
+        return (
+            controls,
+            penalty_weights,
+            dataclasses.replace(optimizer_state, failure_history=history),
+        )
+
+    def _run_iteration(
+        self,
+        iteration,
+        random_key,
+        controls,
+        optimizer_state,
+        initial_state,
+        goals,
+        penalty_weights,
+    ):
+        iteration_kernel = (
+            self._compiled_probe
+            if optimizer_state.independent_probe and iteration == 0
+            else self._compiled_iteration
+        )
+        random_key, controls, _ = iteration_kernel(
+            random_key,
+            controls,
+            None,
+            initial_state,
+            goals,
+            optimizer_state.group_membership,
+            optimizer_state.active_agents,
+            penalty_weights,
+        )
+        return random_key, controls, optimizer_state
+
+    def _warm_up_iterations(self, initial_controls):
+        return 2 if self._uses_independent_probe(initial_controls) else 1
+
+    def _uses_independent_probe(self, initial_controls):
+        return initial_controls is None and not self.config.direct_path_init
 
     def _initial_adaptation_state(self):
         zeros = jnp.zeros(self.rollout.num_agents, dtype=jnp.int32)
-        return zeros, zeros
-
-    @functools.partial(jax.jit, static_argnums=(0,))
-    def _prepare_cycle(
-        self,
-        iteration,
-        actions,
-        collisions,
-        reward_groups,
-        active_agents,
-        penalty_weights,
-        adaptation_state,
-        initialization_probe,
-    ):
-        """Resets probes, adapts penalties, and clips persistent failures."""
-        previous_ids, failure_counts = adaptation_state
-
-        # Restart controls from zero after the initialization probe.
-        actions = jnp.where(
-            initialization_probe, jnp.zeros_like(actions), actions
-        )
-
-        # Increase penalties for colliding agents up to 3; reset others to 1.
-        collided = jnp.any(collisions, axis=0)
-        updated_penalties = jnp.where(
-            collided,
-            jnp.minimum(penalty_weights + 0.5, 3.0),
-            jnp.ones_like(penalty_weights),
-        )
-
-        # The first evaluation establishes history without escalating costs.
-        penalty_weights = jnp.where(
-            iteration > 0, updated_penalties, penalty_weights
-        )
-
-        # Count consecutive failures with the same group identifier.
-        failure_ids = failure_identifiers(reward_groups, active_agents)
-        failure_counts = jnp.where(
-            (failure_ids != 0) & (failure_ids == previous_ids),
-            failure_counts + 1,
-            0,
-        )
-
-        # Clip persistently failing agents' controls and reset their counters.
-        needs_clipping = failure_counts > 5
-        action_mask = jnp.repeat(
-            needs_clipping, self.rollout.action_size // self.rollout.num_agents
-        )
-        actions = jnp.where(
-            action_mask[None, :],
-            self.rollout.environment.clip_actions(actions),
-            actions,
-        )
-        failure_counts = jnp.where(needs_clipping, 0, failure_counts)
-        return actions, penalty_weights, (failure_ids, failure_counts)
+        return FailureHistory(zeros, zeros)
 
     def _update_groups(
         self,
@@ -186,9 +238,7 @@ class D4ORMDPlanner(diffusion.D4ORMPlanner):
         )
 
         # Replan agents with collisions or an unreached goal.
-        active_agents = jnp.any(collisions, axis=0) | ~goal_masks[-1].astype(
-            bool
-        )
+        active_agents = jnp.any(collisions, axis=0) | ~goal_masks[-1].astype(bool)
 
         # Restore neighbor links and form connected reward groups.
         augmented_graph = augment_collision_graph(
@@ -198,18 +248,95 @@ class D4ORMDPlanner(diffusion.D4ORMPlanner):
 
         return groups.astype(jnp.float32), active_agents, adjacency
 
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _adapt_controls(
+        self,
+        iteration,
+        controls,
+        collisions,
+        group_membership,
+        active_agents,
+        penalty_weights,
+        adaptation_state,
+        initialization_probe,
+    ):
+        """Resets probes, adapts penalties, and clips persistent failures."""
+        previous_ids, failure_counts = adaptation_state
+
+        # Restart controls from zero after the initialization probe.
+        controls = jnp.where(
+            initialization_probe, jnp.zeros_like(controls), controls
+        )
+
+        # Increase penalties for colliding agents up to 3; reset others to 1.
+        collided = jnp.any(collisions, axis=0)
+        updated_penalties = jnp.where(
+            collided,
+            jnp.minimum(penalty_weights + 0.5, 3.0),
+            jnp.ones_like(penalty_weights),
+        )
+
+        # The first evaluation establishes history without escalating costs.
+        penalty_weights = jnp.where(
+            iteration > 0, updated_penalties, penalty_weights
+        )
+
+        # Count consecutive failures with the same group identifier.
+        failure_ids = failure_identifiers(group_membership, active_agents)
+        failure_counts = jnp.where(
+            (failure_ids != 0) & (failure_ids == previous_ids),
+            failure_counts + 1,
+            0,
+        )
+
+        # Clip persistently failing agents' controls and reset their counters.
+        needs_clipping = failure_counts > 5
+        control_mask = jnp.repeat(
+            needs_clipping, self.rollout.control_size // self.rollout.num_agents
+        )
+        controls = jnp.where(
+            control_mask[None, :],
+            self.rollout.environment.clip_controls(controls),
+            controls,
+        )
+        failure_counts = jnp.where(needs_clipping, 0, failure_counts)
+        return (
+            controls,
+            penalty_weights,
+            FailureHistory(failure_ids, failure_counts),
+        )
+
+    def _weighted_deformation(self, rewards, candidates, group_membership):
+        # Sum rewards within each group to obtain shared sample weights.
+        group_rewards = rewards @ group_membership.T
+        weights = core.reward_weights(group_rewards, self.config.temperature)
+        agent_candidates = candidates.reshape(
+            self.config.num_samples,
+            self.config.horizon,
+            self.rollout.num_agents,
+            -1,
+        )
+
+        # Average each agent's candidate deformations using its group's weights.
+        deformation = jnp.einsum("sa,stad->tad", weights, agent_candidates)
+        return deformation.reshape(
+            self.config.horizon, self.rollout.control_size
+        )
+
     def _print_iteration(
         self,
         iteration,
-        rewards,
-        goal_masks,
-        collisions,
-        reward_groups,
-        active_agents,
+        evaluation,
+        optimizer_state,
     ):
         """Prints robot status and groups for the evaluated trajectory."""
         groups, masks, collision_flags, active = jax.device_get(
-            (reward_groups, goal_masks, collisions, active_agents)
+            (
+                optimizer_state.group_membership,
+                evaluation.goal_masks,
+                evaluation.collisions,
+                optimizer_state.active_agents,
+            )
         )
 
         # The smallest one-based robot ID represents each component.
@@ -217,7 +344,10 @@ class D4ORMDPlanner(diffusion.D4ORMPlanner):
         collision_steps = np.count_nonzero(collision_flags, axis=0)
 
         label = "Initial plan" if iteration == 0 else f"Iteration {iteration}"
-        print(f"\nD4ORM-D | {label} | reward={float(rewards.mean()):.4f}")
+        print(
+            f"\nD4ORM-D | {label} | "
+            f"reward={float(evaluation.rewards.mean()):.4f}"
+        )
         print("IDs are 1-based; Group is - for robots needing no replanning.")
         print(
             f"{'Robot':>7} {'Group':>7} {'Collision':>11} "
@@ -236,20 +366,3 @@ class D4ORMDPlanner(diffusion.D4ORMPlanner):
                 f"{collided:>11} {collision_steps[robot_index]:>17} "
                 f"{at_goal:>9} {replan:>18}"
             )
-
-    def _weighted_deformation(self, rewards, candidates, reward_groups):
-        # Sum rewards within each group to obtain shared sample weights.
-        group_rewards = rewards @ reward_groups.T
-        weights = core.reward_weights(group_rewards, self.config.temperature)
-        agent_candidates = candidates.reshape(
-            self.config.num_samples,
-            self.config.horizon,
-            self.rollout.num_agents,
-            -1,
-        )
-
-        # Average each agent's candidate deformations using its group's weights.
-        deformation = jnp.einsum("sa,stad->tad", weights, agent_candidates)
-        return deformation.reshape(
-            self.config.horizon, self.rollout.action_size
-        )

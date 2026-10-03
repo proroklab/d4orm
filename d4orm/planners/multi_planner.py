@@ -1,4 +1,4 @@
-"""Command-line entry point for D4ORM and D4ORM-D."""
+"""Command-line entry point for all trajectory planners."""
 
 from d4orm.planners import cli
 

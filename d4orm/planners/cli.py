@@ -11,21 +11,105 @@ import jax.numpy as jnp
 import numpy as np
 
 from d4orm import envs
-from d4orm.planners import core, decoupled, diffusion, path_integral_api
+from d4orm.planners import (
+    core,
+    decoupled,
+    diffusion,
+    distributed,
+    path_integral_api,
+)
 
 PLANNERS = {
     "d4orm": diffusion.D4ORMPlanner,
     "d4orm-d": decoupled.D4ORMDPlanner,
+    "d-d4orm": distributed.DistributedD4ORMPlanner,
     "mppi": path_integral_api.MPPIPlanner,
     "cem": path_integral_api.CEMPlanner,
 }
+
+
+def add_planner_arguments(parser: argparse.ArgumentParser) -> None:
+    """Adds shared optimization and rollout settings to a parser."""
+    parser.add_argument(
+        "--horizon",
+        "--Hsample",
+        type=int,
+        default=100,
+    )
+    parser.add_argument(
+        "--num-samples",
+        "--Nsample",
+        type=int,
+        default=1024,
+    )
+    parser.add_argument(
+        "--num-steps",
+        "--Ndiffuse",
+        type=int,
+        default=100,
+    )
+    parser.add_argument(
+        "--max-iterations",
+        "--Niteration",
+        type=int,
+        default=50,
+    )
+    parser.add_argument(
+        "--direct-path-init",
+        "--direct_path_init",
+        action="store_true",
+        help="Initialize controls with the environment's direct-path seed.",
+    )
+    parser.add_argument(
+        "--temperature",
+        "--temp_sample",
+        type=float,
+        default=0.3,
+    )
+    parser.add_argument(
+        "--beta-start",
+        "--beta1",
+        type=float,
+        default=1e-4,
+    )
+    parser.add_argument(
+        "--beta-end",
+        "--betaT",
+        type=float,
+        default=2e-2,
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="D-D4ORM computational nodes; defaults to the robot count.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="D-D4ORM elite plans; defaults to max(1, num_workers // 4).",
+    )
+    parser.add_argument(
+        "--dt",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--dt-factor",
+        "--dt_factor",
+        type=float,
+        default=1.0,
+    )
 
 
 def make_parser(default_method: str = "d4orm") -> argparse.ArgumentParser:
     """Builds command-line options for planner selection and execution."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--method", choices=(*PLANNERS, "decouple"), default=default_method
+        "--method",
+        choices=(*PLANNERS, "decouple"),
+        default=default_method,
     )
     parser.add_argument(
         "--env-name",
@@ -36,40 +120,40 @@ def make_parser(default_method: str = "d4orm") -> argparse.ArgumentParser:
             "multi2dholo_obsX, or multi2dholo_random"
         ),
     )
-    parser.add_argument("--num-agents", "--Nagent", type=int, default=16)
-    add_planner_arguments(parser)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--save-images", "--save_images", action="store_true")
-    parser.add_argument("--save-data", "--save_data", action="store_true")
-    parser.add_argument("--print-info", "--print_info", action="store_true")
     parser.add_argument(
-        "--output-dir", type=pathlib.Path, default=pathlib.Path("results")
+        "--num-agents",
+        "--Nagent",
+        type=int,
+        default=16,
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+    )
+    add_planner_arguments(parser)
+    parser.add_argument(
+        "--print-info",
+        "--print_info",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--save-images",
+        "--save_images",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--save-data",
+        "--save_data",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=pathlib.Path,
+        default=pathlib.Path("results"),
     )
 
     return parser
-
-
-def add_planner_arguments(parser: argparse.ArgumentParser) -> None:
-    """Adds shared optimization and rollout settings to a parser."""
-    parser.add_argument("--num-samples", "--Nsample", type=int, default=1024)
-    parser.add_argument("--horizon", "--Hsample", type=int, default=100)
-    parser.add_argument("--num-steps", "--Ndiffuse", type=int, default=100)
-    parser.add_argument(
-        "--max-iterations", "--Niteration", type=int, default=50
-    )
-    parser.add_argument(
-        "--temperature", "--temp_sample", type=float, default=0.3
-    )
-    parser.add_argument("--beta-start", "--beta1", type=float, default=1e-4)
-    parser.add_argument("--beta-end", "--betaT", type=float, default=2e-2)
-    parser.add_argument("--dt", type=float, default=0.1)
-    parser.add_argument("--dt-factor", "--dt_factor", type=float, default=1.0)
-    parser.add_argument(
-        "--direct-path-init",
-        "--direct_path_init",
-        action="store_true",
-        help="Initialize controls with the environment's direct-path seed.",
-    )
 
 
 def configuration_from_args(
@@ -85,6 +169,8 @@ def configuration_from_args(
         temperature=args.temperature,
         beta_start=args.beta_start,
         beta_end=args.beta_end,
+        num_workers=args.num_workers,
+        top_k=args.top_k,
     )
 
     rollout_config = core.RolloutConfig(
@@ -96,7 +182,6 @@ def configuration_from_args(
 
 def run(args: argparse.Namespace) -> core.PlanResult:
     """Runs a planner and optionally saves data and visualization."""
-
     # Build the environment, rollout, and selected planner.
     method = "d4orm-d" if args.method == "decouple" else args.method
     environment = envs.get_env(args.env_name, args.num_agents, seed=args.seed)
@@ -123,7 +208,7 @@ def run(args: argparse.Namespace) -> core.PlanResult:
     )
     jax.block_until_ready(
         (
-            result.actions,
+            result.controls,
             result.states,
             result.goal_masks,
             result.collisions,
@@ -150,7 +235,7 @@ def run(args: argparse.Namespace) -> core.PlanResult:
         if args.save_data:
             np.savez_compressed(
                 output / f"{stem}.npz",
-                actions=np.asarray(result.actions),
+                controls=np.asarray(result.controls),
                 states=np.asarray(result.states),
                 initial_state=np.asarray(environment.x0),
                 goals=np.asarray(environment.xg),
@@ -168,7 +253,7 @@ def run(args: argparse.Namespace) -> core.PlanResult:
                 "environment": args.env_name,
                 "seed": args.seed,
                 "num_agents": args.num_agents,
-                "planner": dataclasses.asdict(config),
+                "planner": dataclasses.asdict(planner.config),
                 "rollout": dataclasses.asdict(rollout_config),
                 "success": result.success,
                 "iterations": result.iterations,

@@ -11,7 +11,7 @@ from d4orm.envs import (
     multibase,
 )
 
-# Preserve the existing environment class imports.
+# Public environment class exports.
 Multi2DHeter = multi2dheter.Multi2DHeter
 Multi2d = multi2d.Multi2d
 Multi2dHolo = multi2dholo.Multi2dHolo

@@ -1,4 +1,4 @@
-"""Alternating holonomic and differential-drive robots, as in mbd-multi."""
+"""Alternating holonomic and differential-drive robots."""
 
 import functools
 
@@ -68,10 +68,10 @@ class Multi2DHeter(multi2d.Multi2d):
             x + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4), agent_type
         )
 
-    def integrate_states(self, states, actions, dt):
+    def integrate_states(self, states, controls, dt):
         """Dispatches integration by robot index within the shared rollout."""
         return jax.vmap(self.rk4, in_axes=(0, 0, None, 0))(
-            states, actions, dt, jnp.arange(self.num_agents)
+            states, controls, dt, jnp.arange(self.num_agents)
         )
 
     def get_current_velocity(self, q):
@@ -83,17 +83,17 @@ class Multi2DHeter(multi2d.Multi2d):
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def clip_actions(self, traj, factor=1):
+    def clip_controls(self, traj, factor=1):
         """Clips Cartesian accelerations or steering / acceleration controls."""
-        actions = traj.reshape(-1, self.num_agents, 2)
-        holo = holonomic.limit_norm(actions, self.holo_ma * factor)
+        controls = traj.reshape(-1, self.num_agents, 2)
+        holo = holonomic.limit_norm(controls, self.holo_ma * factor)
         limits = jnp.array([self.diff_mav, self.diff_mla]) * factor
-        differential = jnp.clip(actions, -limits, limits)
+        differential = jnp.clip(controls, -limits, limits)
         return jnp.where(
             self.agent_types[None, :, None] == 0, holo, differential
-        ).reshape(-1, self.action_size)
+        ).reshape(-1, self.control_size)
 
-    def direct_path_actions(self, initial_state, goals, horizon):
+    def direct_path_controls(self, initial_state, goals, horizon):
         """Builds type-specific direct controls using the supplied start/goals."""
         starts = initial_state.pipeline_state.reshape(self.num_agents, 4)
         directions = goals.reshape(self.num_agents, 4)[:, :2] - starts[:, :2]
@@ -102,12 +102,12 @@ class Multi2DHeter(multi2d.Multi2d):
             / (jnp.linalg.norm(directions, axis=-1, keepdims=True) + 1e-8)
             * self.holo_ma
         )
-        actions = jnp.where(
+        controls = jnp.where(
             self.agent_types[:, None] == 0,
             holo,
             jnp.array([0.0, self.diff_mla]),
         )
-        return jnp.tile(actions.flatten(), (horizon, 1))
+        return jnp.tile(controls.flatten(), (horizon, 1))
 
     def get_heading_line(self, state, position, agent_idx):
         """Draws headings only for differential-drive robots."""

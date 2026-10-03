@@ -19,7 +19,7 @@ class HolonomicEnvironment(multibase.MultiBase):
 
     def __init__(self, num_agents: int, position_dim: int):
         super().__init__(num_agents)
-        self.action_dim_agent = position_dim
+        self.control_dim_agent = position_dim
         self.obsv_dim_agent = 2 * position_dim
         self.pos_dim_agent = position_dim
         self.diameter = 5.0
@@ -37,7 +37,7 @@ class HolonomicEnvironment(multibase.MultiBase):
         self.lim = self.diameter / 2 + 1
         self.max_distance = self.diameter
 
-    def direct_path_actions(
+    def direct_path_controls(
         self, initial_state: multibase.State, goals: jax.Array, horizon: int
     ) -> jax.Array:
         """Repeats maximum acceleration toward each robot's goal position."""
@@ -59,11 +59,11 @@ class HolonomicEnvironment(multibase.MultiBase):
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def clip_actions(self, traj: jax.Array, factor: float = 1) -> jax.Array:
-        """Clips joint actions to the scaled actuation limits."""
-        actions = traj.reshape(-1, self.num_agents, self.action_dim_agent)
-        return limit_norm(actions, self.max_acceleration * factor).reshape(
-            -1, self.action_size
+    def clip_controls(self, traj: jax.Array, factor: float = 1) -> jax.Array:
+        """Clips joint controls to the scaled actuation limits."""
+        controls = traj.reshape(-1, self.num_agents, self.control_dim_agent)
+        return limit_norm(controls, self.max_acceleration * factor).reshape(
+            -1, self.control_size
         )
 
     def clip_velocity(self, x: jax.Array) -> jax.Array:
@@ -77,6 +77,6 @@ class HolonomicEnvironment(multibase.MultiBase):
         return jnp.linalg.norm(q[:, self.pos_dim_agent :], axis=-1)
 
     @property
-    def action_size(self) -> int:
-        """Number of components in the joint action vector."""
-        return self.action_dim_agent * self.num_agents
+    def control_size(self) -> int:
+        """Number of components in the joint control vector."""
+        return self.control_dim_agent * self.num_agents

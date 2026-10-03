@@ -40,58 +40,81 @@ class D4ORMPlanner(core.Planner):
                 self._cumulative_alphas[1:] / self._cumulative_alphas[:-1],
             )
         )
+        self._compiled_iteration = jax.jit(self._optimize_iteration)
 
-    def _weighted_deformation(self, rewards, candidates, reward_groups):
-        del reward_groups  # Vanilla D4ORM uses one joint reward.
-        weights = core.reward_weights(
-            rewards.mean(axis=-1), self.config.temperature
-        )
-        return jnp.einsum("s,sth->th", weights, candidates)
-
-    def _optimize_cycle(
+    def _run_iteration(
         self,
+        iteration,
         random_key,
-        actions,
-        sample_std,
+        controls,
+        optimizer_state,
         initial_state,
         goals,
-        reward_groups,
+        penalty_weights,
+    ):
+        del iteration
+        return self._compiled_iteration(
+            random_key,
+            controls,
+            optimizer_state,
+            initial_state,
+            goals,
+            None,
+            None,
+            penalty_weights,
+        )
+
+    def _optimize_iteration(
+        self,
+        random_key,
+        controls,
+        optimizer_state,
+        initial_state,
+        goals,
+        group_membership,
         active_agents,
         penalty_weights,
         include_robot_collisions=True,
     ):
         # Restrict deformations to agents selected for replanning.
-        action_mask = jnp.repeat(
-            active_agents, self.rollout.action_size // self.rollout.num_agents
+        control_mask = (
+            jnp.ones(self.rollout.control_size, dtype=bool)
+            if active_agents is None
+            else jnp.repeat(
+                active_agents,
+                self.rollout.control_size // self.rollout.num_agents,
+            )
         )
 
-        def denoise(carry, step):
+        def denoise(carry, denoising_step):
             sample_key, deformation = carry
 
-            # Read the diffusion coefficients for this step.
-            alpha_bar = self._cumulative_alphas[step]
-            alpha = self._alphas[step]
+            # Read the diffusion coefficients for this denoising step.
+            alpha_bar = self._cumulative_alphas[denoising_step]
+            alpha = self._alphas[denoising_step]
             noise_variance = 1.0 - alpha_bar
 
             # Sample deformations at the current diffusion noise level.
             sample_key, noise_key = jax.random.split(sample_key)
-            candidate_shape = (self.config.num_samples,) + actions.shape
+            candidate_shape = (self.config.num_samples,) + controls.shape
             noise = jax.random.normal(noise_key, candidate_shape)
             mean = deformation / jnp.sqrt(alpha_bar)
-            candidates = (mean + noise * self._noise_scales[step]) * action_mask
+            candidates = (
+                mean + noise * self._noise_scales[denoising_step]
+            ) * control_mask
 
             # Evaluate the perturbed plans using rollout rewards.
             rewards = self.rollout.compute_rewards(
                 initial_state,
                 goals,
-                actions + candidates,
+                controls + candidates,
                 penalty_weights,
                 include_robot_collisions,
             )
 
             # Perform score-ascent
             mean_deformation = self._weighted_deformation(
-                rewards, candidates, reward_groups
+                rewards, candidates, group_membership
             )
             score = (
                 -deformation / noise_variance
@@ -104,8 +127,15 @@ class D4ORMPlanner(core.Planner):
         # Denoise from high to low noise and apply the final deformation.
         (random_key, deformation), _ = jax.lax.scan(
             denoise,
-            (random_key, jnp.zeros_like(actions)),
+            (random_key, jnp.zeros_like(controls)),
             jnp.arange(self.config.num_steps, 0, -1),
         )
 
-        return random_key, actions + deformation, sample_std
+        return random_key, controls + deformation, optimizer_state
+
+    def _weighted_deformation(self, rewards, candidates, group_membership):
+        del group_membership  # Vanilla D4ORM uses one joint reward.
+        weights = core.reward_weights(
+            rewards.mean(axis=-1), self.config.temperature
+        )
+        return jnp.einsum("s,sth->th", weights, candidates)

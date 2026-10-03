@@ -1,4 +1,4 @@
-"""Seeded random starts and grid goals, following the reference's mode 3."""
+"""Planar holonomic robots with seeded random starts and grid goals."""
 
 import math
 

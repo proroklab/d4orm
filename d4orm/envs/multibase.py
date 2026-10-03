@@ -21,7 +21,7 @@ class MultiBase:
     """Shared simulation for subclasses defining geometry and robot dynamics."""
 
     # Subclasses define geometry before using the shared dynamics.
-    action_dim_agent: int
+    control_dim_agent: int
     obsv_dim_agent: int
     pos_dim_agent: int
     x0: jax.Array
@@ -69,7 +69,7 @@ class MultiBase:
             collision=jnp.zeros(self.num_agents, dtype=jnp.float32),
         )
 
-    def direct_path_actions(
+    def direct_path_controls(
         self, initial_state: State, goals: jax.Array, horizon: int
     ) -> jax.Array:
         """Builds a constant-control seed for a direct path.
@@ -80,13 +80,13 @@ class MultiBase:
             horizon: Number of control timesteps.
 
         Returns:
-            Controls shaped (horizon, action_size). Collision avoidance and
+            Controls shaped (horizon, control_size). Collision avoidance and
             goal stopping are handled by the normal rollout and optimizer.
         """
         raise NotImplementedError
 
-    def clip_actions(self, traj: jax.Array, factor: float = 1):
-        """Clips joint actions to the environment's actuation limits."""
+    def clip_controls(self, traj: jax.Array, factor: float = 1):
+        """Clips joint controls to the environment's actuation limits."""
         raise NotImplementedError
 
     def agent_dynamics(self, x: jax.Array, u: jax.Array):
@@ -113,9 +113,9 @@ class MultiBase:
         )
         return self.clip_velocity(next_state)
 
-    def integrate_states(self, states, actions, dt):
+    def integrate_states(self, states, controls, dt):
         """Integrates the robot batch; subclasses may dispatch by robot type."""
-        return jax.vmap(self.rk4, in_axes=(0, 0, None))(states, actions, dt)
+        return jax.vmap(self.rk4, in_axes=(0, 0, None))(states, controls, dt)
 
     def rollout(
         self,
@@ -130,7 +130,7 @@ class MultiBase:
         Args:
             state: Initial environment state.
             xg: Flattened joint goal state.
-            us: Controls of shape (horizon, joint_action_dim).
+            us: Controls of shape (horizon, joint_control_dim).
             penalty_weight: Cost per colliding neighbor.
             dt: Integration timestep in seconds.
 
@@ -140,7 +140,7 @@ class MultiBase:
         """
         return self._rollout(state, xg, us, penalty_weight, dt, True)
 
-    def score_actions(
+    def score_controls(
         self,
         state: State,
         xg: jax.Array,
@@ -163,7 +163,7 @@ class MultiBase:
         self,
         state,
         goals,
-        actions,
+        controls,
         penalty_weight,
         dt,
         record_history,
@@ -177,12 +177,12 @@ class MultiBase:
             axis=-1,
         )
 
-        def advance(carry, action):
+        def advance(carry, control):
             current_state, reward_sum = carry
             next_state = self.step(
                 current_state,
                 goals,
-                action,
+                control,
                 initial_distances,
                 penalty_weight,
                 dt,
@@ -200,9 +200,9 @@ class MultiBase:
             return (next_state, reward_sum + next_state.reward), history
 
         (_, reward_sum), history = jax.lax.scan(
-            advance, (state, jnp.zeros_like(state.reward)), actions
+            advance, (state, jnp.zeros_like(state.reward)), controls
         )
-        rewards = reward_sum / actions.shape[0]
+        rewards = reward_sum / controls.shape[0]
         if record_history:
             return (rewards, *history)
         return rewards
@@ -212,7 +212,7 @@ class MultiBase:
         self,
         state: State,
         xg: jax.Array,
-        action: jax.Array,
+        control: jax.Array,
         max_distances: jax.Array,
         penalty_weight: float = 1.0,
         dt: float = 0.1,
@@ -220,9 +220,9 @@ class MultiBase:
     ) -> State:
         """Advances robots and evaluates goal stopping and collision costs."""
         robot_states = state.pipeline_state.reshape(self.num_agents, -1)
-        robot_actions = action.reshape(self.num_agents, -1)
+        robot_controls = control.reshape(self.num_agents, -1)
         goals = xg.reshape(self.num_agents, -1)
-        next_states = self.integrate_states(robot_states, robot_actions, dt)
+        next_states = self.integrate_states(robot_states, robot_controls, dt)
         stopped = state.mask.astype(bool)
         next_states = jnp.where(stopped[:, None], robot_states, next_states)
         goal_distances = jnp.linalg.norm(
@@ -263,7 +263,9 @@ class MultiBase:
         colliding_pairs = self.collision_matrix(q)
         obstacle_collisions = self.obstacle_collision_matrix(q)
         if include_robot_collisions:
-            penalties = colliding_pairs.sum(axis=1) + obstacle_collisions.sum(axis=1)
+            penalties = colliding_pairs.sum(axis=1) + obstacle_collisions.sum(
+                axis=1
+            )
         else:
             penalties = obstacle_collisions.sum(axis=1)
         return (
@@ -306,9 +308,9 @@ class MultiBase:
         return jnp.sum(differences**2, axis=-1) <= thresholds**2
 
     @property
-    def action_size(self) -> int:
-        """Number of components in the joint action vector."""
-        return self.action_dim_agent * self.num_agents
+    def control_size(self) -> int:
+        """Number of components in the joint control vector."""
+        return self.control_dim_agent * self.num_agents
 
     @property
     def observation_size(self) -> int:

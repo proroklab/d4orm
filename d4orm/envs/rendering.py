@@ -1,4 +1,4 @@
-"""Matplotlib exports following the mbd-multi trajectory and animation style."""
+"""Matplotlib trajectory plots and animations for multi-robot environments."""
 
 import matplotlib
 import numpy as np
@@ -109,7 +109,7 @@ def _draw_paths(environment, axes, states, group_ids=None):
 def render_trajectory(
     environment, trajectory, gif_path, image_path, group_ids=None
 ):
-    """Saves reference-style GIF and static plot, projecting 3D paths onto XY.
+    """Saves a GIF and static plot, projecting 3D paths onto the XY plane.
 
     Static plots show starts, goals, and collisions. Animations show moving
     bodies and headings. A None GIF path skips animation.

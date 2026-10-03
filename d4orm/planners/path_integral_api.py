@@ -1,5 +1,6 @@
 """MPPI and CEM planners using Gaussian trajectory sampling."""
 
+import abc
 import math
 
 import jax
@@ -11,29 +12,48 @@ from d4orm.planners import core
 class PathIntegralPlanner(core.Planner):
     """Shared Gaussian sampling loop for MPPI and CEM."""
 
-    def _initial_sampling_deviation(self, actions):
+    def __init__(
+        self,
+        rollout: core.Rollout,
+        config: core.PlannerConfig = core.PlannerConfig(),
+    ):
+        super().__init__(rollout, config)
+        self._compiled_iteration = jax.jit(self._optimize_iteration)
+
+    def _initial_optimizer_state(self, controls, *, warm_start):
         """Initializes MPPI and CEM sampling with unit standard deviation."""
-        return jnp.full_like(actions, 1.0)
+        del warm_start
+        return jnp.full_like(controls, 1.0)
 
-    def _update_distribution(self, rewards, candidates, sample_std):
-        raise NotImplementedError
+    def _run_iteration(
+        self,
+        iteration,
+        random_key,
+        controls,
+        optimizer_state,
+        initial_state,
+        goals,
+        penalty_weights,
+    ):
+        del iteration
+        return self._compiled_iteration(
+            random_key,
+            controls,
+            optimizer_state,
+            initial_state,
+            goals,
+            penalty_weights,
+        )
 
-    def _optimize_cycle(
+    def _optimize_iteration(
         self,
         random_key,
-        actions,
+        controls,
         sample_std,
         initial_state,
         goals,
-        reward_groups,
-        active_agents,
         penalty_weights,
     ):
-        del (
-            reward_groups,
-            active_agents,
-        )  # Optimize all agents jointly.
-
         def update(carry, unused_step):
             del unused_step  # Fixed-length scan needs no step index.
             sample_key, mean, deviation = carry
@@ -41,7 +61,7 @@ class PathIntegralPlanner(core.Planner):
             # Sample candidate control sequences from the current distribution.
             sample_key, noise_key = jax.random.split(sample_key)
             candidates = mean + deviation * jax.random.normal(
-                noise_key, (self.config.num_samples,) + actions.shape
+                noise_key, (self.config.num_samples,) + controls.shape
             )
 
             # Compute each candidate's mean reward across agents.
@@ -57,11 +77,15 @@ class PathIntegralPlanner(core.Planner):
 
         result, _ = jax.lax.scan(
             update,
-            (random_key, actions, sample_std),
+            (random_key, controls, sample_std),
             xs=None,
             length=self.config.num_steps,
         )
         return result
+
+    @abc.abstractmethod
+    def _update_distribution(self, rewards, candidates, sample_std):
+        """Returns the updated sampling mean and standard deviation."""
 
 
 class MPPIPlanner(PathIntegralPlanner):

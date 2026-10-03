@@ -13,7 +13,7 @@ class Multi2d(multibase.MultiBase):
 
     def __init__(self, num_agents: int):
         super().__init__(num_agents)
-        self.action_dim_agent = 2
+        self.control_dim_agent = 2
         self.obsv_dim_agent = 4
         self.pos_dim_agent = 2
         self.diameter = 5.0
@@ -34,17 +34,17 @@ class Multi2d(multibase.MultiBase):
         self.lim = self.diameter / 2 + 1
         self.max_distance = self.diameter
 
-    def direct_path_actions(
+    def direct_path_controls(
         self, initial_state: multibase.State, goals: jax.Array, horizon: int
     ) -> jax.Array:
-        """Repeats forward acceleration with zero steering, as in the reference.
+        """Repeats maximum forward acceleration with zero angular velocity.
 
         Default reset headings already face the goals. Custom initial headings
         are preserved, so the seed follows those headings without steering.
         """
-        del initial_state, goals  # The reference seed assumes aligned headings.
-        robot_actions = jnp.array([0.0, self.max_acceleration])
-        return jnp.tile(robot_actions, (horizon, self.num_agents))
+        del initial_state, goals  # The seed is independent of state and goals.
+        robot_controls = jnp.array([0.0, self.max_acceleration])
+        return jnp.tile(robot_controls, (horizon, self.num_agents))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def agent_dynamics(self, x: jax.Array, u: jax.Array) -> jax.Array:
@@ -66,13 +66,15 @@ class Multi2d(multibase.MultiBase):
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def clip_actions(self, traj: jax.Array, factor: float = 1) -> jax.Array:
-        """Clips joint actions to the scaled actuation limits."""
-        actions = traj.reshape(-1, self.num_agents, self.action_dim_agent)
+    def clip_controls(self, traj: jax.Array, factor: float = 1) -> jax.Array:
+        """Clips joint controls to the scaled actuation limits."""
+        controls = traj.reshape(-1, self.num_agents, self.control_dim_agent)
         limits = (
             jnp.array([self.max_angular_speed, self.max_acceleration]) * factor
         )
-        return jnp.clip(actions, -limits, limits).reshape(-1, self.action_size)
+        return jnp.clip(controls, -limits, limits).reshape(
+            -1, self.control_size
+        )
 
     def clip_velocity(self, x: jax.Array) -> jax.Array:
         """Clips a robot velocity to the speed limit."""
@@ -83,9 +85,9 @@ class Multi2d(multibase.MultiBase):
         return jnp.abs(q[:, 3])
 
     @property
-    def action_size(self) -> int:
-        """Number of components in the joint action vector."""
-        return self.action_dim_agent * self.num_agents
+    def control_size(self) -> int:
+        """Number of components in the joint control vector."""
+        return self.control_dim_agent * self.num_agents
 
     def get_heading_line(self, state, position, agent_idx):
         """Returns a short line indicating robot heading."""
