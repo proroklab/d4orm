@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>Denoising Multi-Robot Trajectories</h2>
+  <h1>Denoising Multirobot Trajectories</h2>
   <b>IEEE Transactions on Robotics (T-RO) 2026</b>
   <p>
     <a href="https://yuhaozhang7.github.io" target="_blank">Yuhao Zhang</a><sup>1</sup>,
@@ -11,6 +11,7 @@
   </p>
 
   [<img src="https://img.shields.io/badge/arXiv--b31b1b?style=social&logo=arxiv" alt="Arxiv">](https://arxiv.org/abs/2609.35651)
+  [<img src="https://img.shields.io/badge/IEEE%20Xplore--00629B?style=social&logo=ieee" alt="IEEE Xplore">](https://ieeexplore.ieee.org/document/11731799)
   [<img src="https://img.shields.io/badge/YouTube--red?style=social&logo=youtube" alt="YouTube">]()
 </div>
 
@@ -108,10 +109,13 @@ Use `d4orm --help` for all options.
 If you find this work to be useful in your research, please consider citing:
 ```bibtex
 @article{zhang2026denoising,
-  title={Denoising Multi-Robot Trajectories},
+  title={Denoising Multirobot Trajectories},
   author={Zhang, Yuhao and Okumura, Keisuke and Shankar, Ajay and Prorok, Amanda},
-  journal={arXiv preprint arXiv:2609.35651},
-  year={2026}
+  journal={IEEE Transactions on Robotics},
+  volume={42},
+  pages={4099--4118},
+  year={2026},
+  doi={10.1109/TRO.2026.3742231}
 }
 ```
 ```bibtex
@@ -121,7 +125,6 @@ If you find this work to be useful in your research, please consider citing:
   booktitle={IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
   pages={14118--14123},
   year={2025},
-  doi={10.1109/IROS60139.2025.11246029},
-  publisher={IEEE}
+  doi={10.1109/IROS60139.2025.11246029}
 }
 ```
