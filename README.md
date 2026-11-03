@@ -12,7 +12,7 @@
 
   [<img src="https://img.shields.io/badge/arXiv--b31b1b?style=social&logo=arxiv" alt="Arxiv">](https://arxiv.org/abs/2609.35651)
   [<img src="https://img.shields.io/badge/IEEE%20Xplore--00629B?style=social&logo=ieee" alt="IEEE Xplore">](https://ieeexplore.ieee.org/document/11731799)
-  [<img src="https://img.shields.io/badge/YouTube--red?style=social&logo=youtube" alt="YouTube">]()
+  [<img src="https://img.shields.io/badge/YouTube--red?style=social&logo=youtube" alt="YouTube">](https://www.youtube.com/watch?v=sK6mr42aXe8)
 </div>
 
 <p align="center">
